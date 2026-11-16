@@ -208,6 +208,51 @@ REASONS = {
     "D_WINDOW_OVERLAP": _r(
         "D_WINDOW_OVERLAP", WARN, "design",
         "实验期内本商品自己有促销，窗口不干净", "把开始日挪到促销结束之后"),
+    # ---- M8 批次对照排程 ----
+    "S_NO_BATCH": _r(
+        "S_NO_BATCH", WARN, "schedule",
+        "还没有批次，排程缺少历史序列", "先在导入页跑一次"),
+    "S_BAD_ROW": _r(
+        "S_BAD_ROW", ERROR, "schedule",
+        "实验行字段不合法（缺列、日期无法解析或结束不晚于开始）",
+        "每行写：实验编号,商品,渠道,开始日,结束日"),
+    "S_DUP_EXPERIMENT": _r(
+        "S_DUP_EXPERIMENT", ERROR, "schedule",
+        "同一批里实验编号重复", "实验编号必须唯一，便于核对占用"),
+    "S_UNKNOWN_SERIES": _r(
+        "S_UNKNOWN_SERIES", ERROR, "schedule",
+        "实验商品在本批次没有日销记录", "换成日销文件里出现过的商品"),
+    "S_CONTROL_TARGET": _r(
+        "S_CONTROL_TARGET", ERROR, "schedule",
+        "候选对照就是实验商品自己", "对照必须是同渠道的其它商品"),
+    "S_CONTROL_OVERLAP": _r(
+        "S_CONTROL_OVERLAP", ERROR, "schedule",
+        "候选对照在实验窗内有自己的促销，不能当对照", "换对照或挪实验窗"),
+    "S_CONTROL_BUSY": _r(
+        "S_CONTROL_BUSY", ERROR, "schedule",
+        "候选对照在该时段已被另一场实验占用，窗口重叠", "改期或换其它对照"),
+    "S_NO_CANDIDATE": _r(
+        "S_NO_CANDIDATE", ERROR, "schedule",
+        "该商品在同渠道没有任何可选对照", "补同渠道同品类商品的日销"),
+    "S_NO_FEASIBLE": _r(
+        "S_NO_FEASIBLE", ERROR, "schedule",
+        "没有任何满足全部硬约束的整批方案，该实验无法安排",
+        "改实验窗、补对照商品后重排，禁止复用对照凑数"),
+    "S_PLAN_STALE": _r(
+        "S_PLAN_STALE", ERROR, "schedule",
+        "排程方案已过期或已被新版本取代", "重新生成方案再确认"),
+    "S_PLAN_SUPERSEDED": _r(
+        "S_PLAN_SUPERSEDED", ERROR, "schedule",
+        "确认时发现占用已被其它方案抢先", "重新生成方案，原分配未被改动"),
+    "S_OCCUPANCY_BUSY": _r(
+        "S_OCCUPANCY_BUSY", ERROR, "schedule",
+        "占用表正被另一次确认写入，本次未占位", "稍后重试，重试不会重复占位"),
+    "S_PLAN_CONFIRMED": _r(
+        "S_PLAN_CONFIRMED", INFO, "schedule",
+        "整批对照已原子占用成功", "任一实验失败都会整批回滚"),
+    "S_CONTROL_REUSE": _r(
+        "S_CONTROL_REUSE", INFO, "schedule",
+        "同一对照服务多场实验，但窗口互不重叠", "重叠即硬冲突，由排程保证"),
 }
 
 

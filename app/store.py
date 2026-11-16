@@ -101,11 +101,40 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS allocation_plans (
+    plan_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    superseded_by TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_plans_batch ON allocation_plans(batch_id, created_at);
+
+CREATE TABLE IF NOT EXISTS control_occupancy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id TEXT NOT NULL,
+    batch_id TEXT NOT NULL,
+    experiment_id TEXT NOT NULL,
+    target_sku TEXT NOT NULL,
+    control_sku TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(plan_id, experiment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_occupancy_resource
+    ON control_occupancy(control_sku, channel, start_date, end_date);
 """
 
 BATCH_TABLES = (
     "sources", "sales", "promos", "promo_windows", "quarantine",
     "elasticity", "lift", "spread", "stages", "totals", "manifests",
+    "allocation_plans", "control_occupancy",
 )
 
 
@@ -350,3 +379,104 @@ class Store:
     def manifest(self, batch_id: str) -> dict | None:
         rows = self._rows("SELECT json FROM manifests WHERE batch_id=?", (batch_id,))
         return json.loads(rows[0]["json"]) if rows else None
+
+    # ---------- M8 批次对照排程 ----------
+    def insert_plan(self, plan: dict) -> None:
+        """登记一份排程方案（draft / confirmed / superseded）。"""
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO allocation_plans (plan_id, batch_id, status, created_at,
+                        confirmed_at, superseded_by, payload_json, result_json)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (plan["plan_id"], plan["batch_id"], plan["status"], plan["created_at"],
+                 plan.get("confirmed_at"), plan.get("superseded_by", ""),
+                 json.dumps(plan.get("payload", {}), ensure_ascii=False),
+                 json.dumps(plan.get("result", {}), ensure_ascii=False)),
+            )
+
+    def get_plan(self, plan_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM allocation_plans WHERE plan_id=?",
+                               (plan_id,)).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["payload"] = json.loads(out.pop("payload_json"))
+        out["result"] = json.loads(out.pop("result_json"))
+        return out
+
+    def list_plans(self, batch_id: str, limit: int = 20) -> list[dict]:
+        rows = self._rows(
+            "SELECT plan_id, batch_id, status, created_at, confirmed_at, superseded_by "
+            "FROM allocation_plans WHERE batch_id=? ORDER BY created_at DESC, rowid DESC "
+            "LIMIT ?", (batch_id, limit))
+        return rows
+
+    def latest_confirmed_plan(self, batch_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM allocation_plans WHERE batch_id=? AND status='confirmed' "
+                "ORDER BY confirmed_at DESC, rowid DESC LIMIT 1", (batch_id,)).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["payload"] = json.loads(out.pop("payload_json"))
+        out["result"] = json.loads(out.pop("result_json"))
+        return out
+
+    def mark_plan_superseded(self, conn, batch_id: str, by_plan_id: str) -> None:
+        conn.execute(
+            "UPDATE allocation_plans SET status='superseded', superseded_by=? "
+            "WHERE batch_id=? AND status='confirmed'", (by_plan_id, batch_id))
+
+    def occupancy(self, batch_id: str) -> list[dict]:
+        return self._rows(
+            "SELECT o.* FROM control_occupancy o "
+            "JOIN allocation_plans p ON p.plan_id=o.plan_id "
+            "WHERE o.batch_id=? AND p.status='confirmed' "
+            "ORDER BY o.start_date, o.experiment_id", (batch_id,))
+
+    def confirm_plan(self, plan_id: str, occupancy_rows: list[dict],
+                     confirmed_at: str, base_confirmed_plan: str = "") -> None:
+        """整批确认的唯一落库点：一个事务里完成「校验 → 顶替旧版 → 写占用」。
+
+        任一步失败整体回滚，不留半批占用；并发确认在 BEGIN IMMEDIATE 上排队，
+        抢不到写锁直接抛 OperationalError，由编排层翻译成 S_OCCUPANCY_BUSY。
+        基线在事务内复查：排队期间若已有别的方案确认，本事务回滚。
+        """
+        conn = sqlite3.connect(self.path, timeout=15.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            plan = conn.execute(
+                "SELECT * FROM allocation_plans WHERE plan_id=?", (plan_id,)).fetchone()
+            if plan is None:
+                raise LookupError(plan_id)
+            if plan["status"] != "draft":
+                raise RuntimeError(f"plan {plan_id} status={plan['status']}")
+            current = conn.execute(
+                "SELECT plan_id FROM allocation_plans WHERE batch_id=? "
+                "AND status='confirmed' ORDER BY confirmed_at DESC, rowid DESC LIMIT 1",
+                (plan["batch_id"],)).fetchone()
+            current_id = current["plan_id"] if current else ""
+            if current_id != base_confirmed_plan:
+                raise RuntimeError(f"stale base: {base_confirmed_plan!r} != {current_id!r}")
+            batch_id = plan["batch_id"]
+            self.mark_plan_superseded(conn, batch_id, plan_id)
+            conn.execute(
+                "UPDATE allocation_plans SET status='confirmed', confirmed_at=? "
+                "WHERE plan_id=?", (confirmed_at, plan_id))
+            for row in occupancy_rows:
+                conn.execute(
+                    """INSERT INTO control_occupancy (plan_id, batch_id, experiment_id,
+                            target_sku, control_sku, channel, start_date, end_date, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (plan_id, batch_id, row["experiment_id"], row["target_sku"],
+                     row["control_sku"], row["channel"], row["start_date"],
+                     row["end_date"], confirmed_at))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

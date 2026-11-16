@@ -485,3 +485,47 @@ details.evidence[open] summary {
   font-family: var(--font-ui);
   color: var(--ink);
 }
+
+/* ---------- M8 批次对照排程 ---------- */
+.form-stack {
+  display: block;
+}
+
+.form-stack .field-grow {
+  display: block;
+  margin-bottom: var(--gap-sm);
+}
+
+.form-stack textarea {
+  width: 100%;
+  min-height: 132px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #c9ccd2);
+  border-radius: 6px;
+  font-family: var(--font-num);
+  font-size: var(--step-6);
+  line-height: 1.6;
+  resize: vertical;
+  background: var(--surface, #fff);
+  color: var(--ink);
+}
+
+.form-stack textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.verdict-note.is-error-text {
+  color: var(--danger, #b42318);
+  font-weight: 600;
+}
+
+.candidate-block {
+  margin-bottom: var(--gap);
+}
+
+.candidate-title {
+  font-size: var(--step-5);
+  margin: 0 0 var(--gap-sm);
+  color: var(--ink-strong);
+}

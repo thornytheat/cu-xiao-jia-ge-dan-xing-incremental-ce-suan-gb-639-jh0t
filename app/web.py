@@ -24,6 +24,7 @@ NAV = (
     ("/elasticity", "弹性", "elastic"),
     ("/lift", "增量", "lift"),
     ("/design", "实验设计", "design"),
+    ("/allocation", "批次对照", "schedule"),
     ("/report", "报告", "report"),
 )
 STATUS_LABELS = {

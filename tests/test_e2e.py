@@ -10,7 +10,7 @@ from decimal import Decimal
 from fixtures import dataset as fx
 
 PAGES = ("/", "/contract", "/quarantine", "/elasticity", "/lift", "/design",
-         "/report")
+         "/allocation", "/report")
 
 
 def test_full_pipeline_end_to_end(client):

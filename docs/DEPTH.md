@@ -1,9 +1,10 @@
 # 深度登记 pricelift（促销价格弹性与增量测算）
 
-- 规模：中型（7 个功能模块 / 7 个页面 / 80 个文件 / 90 条测试 / 18 条陷阱）
+- 规模：中型（8 个功能模块 / 8 个页面 / 107 个源文件 / 108 条测试 / 23 条陷阱）
 - 核心规则一：**对数线性弹性**——`ln q = a + b·ln p` 用最小二乘估计，先对 x 与 y 双中心化再求比值（漏掉中心化斜率会变正）；0 销量默认按 `ln(q+0.5)` 统一平移，可切到剔除；输出斜率、标准误、t 值与 R²，`|t| < 1.96` 记为不显著。
 - 核心规则二：**增量测算与区间**——基线 = 促销前 14 天日均 × 促销有效天数 × 对照组同期倍数；增量 = 实际 − 基线（Decimal，2 位）；区间宽度用弹性斜率的 delta 法给出，斜率标准误为 0 时区间收成一点。
 - 核心规则三：**实验设计**——统计单位是「一天一条日销售额」；`k = z(1−α/2) + z(功效)`，`最小实验期 n = (A² + sqrt(A⁴ + 4·A²·m))/2`（`A = k·cv/目标效应`，`m = 14` 天基线窗）；方差用 HC1 稳健标准误与朴素标准误的比值放大；缺日必须按三种补法各算一遍，结论不一致就标出来。
+- 核心规则四：**批次对照排程**——硬约束（同渠道非自身、窗内无自有促销、同对照同时段不重叠）先于择优；窗口左闭右开按天判撞，首尾相接允许复用；MRV 回溯取全批前置趋势差总和最小的完整匹配，无解即阻断；确认单事务原子提交，乐观基线防并发，重试不重复占位。
 - 使用者与工作流：牧原乳品区域销售部 6 人，每周十余个促销，增量靠经验拍。现在导入日销与促销日历即可得到「弹性 + 增量 + 区间 + 五账」，再按下一期目标效应算实验期、对照与预期区间，每条结论都能追到行号与原因码。
 
 ## 功能模块
@@ -17,8 +18,9 @@
 | M5 增量与批次 | 触发增量测算、看区间与渠道分摊、查批次历史与幂等重跑 | POST /api/lift、GET /api/batches、页面 /lift | `app/modules/m5_lift/baseline.py` `app/modules/m5_lift/ci.py` `app/modules/m5_lift/spread.py` `app/modules/m5_lift/service.py` | `tests/test_lift.py` |
 | M6 报告导出 | 核对五账，导出增量/弹性/五账/运行清单 | GET /api/report、GET /api/export、页面 /report | `app/modules/m6_report/csv_out.py` `app/modules/m6_report/manifest_out.py` `app/modules/m6_report/service.py` | `tests/test_report.py` |
 | M7 实验设计 | 给目标效应与功效，算最小实验期、预算下可识别效应、对照建议与预期区间 | POST /api/design、GET /api/design、页面 /design | `app/modules/m7_design/power.py` `app/modules/m7_design/robust.py` `app/modules/m7_design/impute.py` `app/modules/m7_design/control.py` `app/modules/m7_design/service.py` | `tests/test_design.py` `tests/test_design_api.py` |
+| M8 批次对照排程 | 一批实验一次排好独立对照，看候选淘汰原因，整批确认占用、失败按原分配重试 | POST /api/allocation/plan、POST /api/allocation/confirm、POST /api/allocation/retry、页面 /allocation | `app/modules/m8_schedule/matcher.py` `app/modules/m8_schedule/service.py` `app/modules/m8_schedule/handler.py` `app/store.py` | `tests/test_schedule_matcher.py` `tests/test_schedule_api.py` |
 
-端到端：`tests/test_e2e.py`（真实样例 → 隔离 → 弹性 → 增量 → 报告 → 设计 → 导出，含 422 失败输入与幂等重跑）。
+端到端：`tests/test_e2e.py`（真实样例 → 隔离 → 弹性 → 增量 → 报告 → 设计 → 排程 → 导出，含 422 失败输入与幂等重跑）。
 
 ## 陷阱登记
 
@@ -42,6 +44,10 @@
 | TRAP-25 | 两版活动价的区间重叠 | 取到哪版看运气，重叠日重复计天数 | 重叠天数显式标出（`Q_PROMO_OVERLAP`），按版本号大者生效 | `app/modules/m2_price/versions.py` | `tests/test_price.py::test_version_overlap_marked_and_highest_wins` |
 | TRAP-27 | 促销期内缺 1-2 天，缺日按 0 补 | 日均被压低、波动被放大，预期区间从「不含 0」翻成「含 0」 | 三种补法（丢弃 / 按 0 / 按均值）各算一遍，区间含 0 或所需天数极差超 10% 就记 `D_IMPUTE_SENSITIVE` 并逐行给出数值 | `app/modules/m7_design/impute.py` | `tests/test_design.py::test_impute_sensitivity_flips_on_light_missing` |
 | TRAP-28 | 候选对照在实验期内自己也在促销 | 同期倍数把它自己的促销算进基线，增量被抵掉 | 先按实验期（左闭右开）判重叠，有重叠直接标 `排除`（`D_CONTROL_OVERLAP`），只从「可用」里选对照 | `app/modules/m7_design/control.py` | `tests/test_design.py::test_control_excludes_candidate_with_promo_in_experiment_window` |
+| TRAP-29 | 同一对照同时段被两场实验共用，增量互相算串 | 按每场独立挑最优会选到同一个对照，占用表出现重叠行 | 窗口按天判撞（左闭右开，首尾相接不算），已确认占用与本批内部分配都进硬约束，`S_CONTROL_BUSY` 直接淘汰 | `app/modules/m8_schedule/matcher.py` | `tests/test_schedule_api.py::test_existing_occupancy_blocks_overlapping_candidate` |
+| TRAP-30 | 逐场贪心挑趋势差最小的对照 | 先选的场占走关键对照，后面的场全部卡死，其实存在全批可行解 | MRV 回溯求全批趋势差总和最小的完整匹配；不存在完整匹配就阻断标红，绝不返半成品分配 | `app/modules/m8_schedule/matcher.py` | `tests/test_schedule_matcher.py::test_solve_picks_minimum_total_trend_gap` |
+| TRAP-31 | 确认中途失败留下半批占用，或重试把同一对照占两次 | 先删后插中途异常，占用表进入混合态，后续排程全错 | `BEGIN IMMEDIATE` 单事务 + 乐观基线复查，全有或全无；失败回滚保留上一版，重试只产草稿不写占用 | `app/store.py` `app/modules/m8_schedule/service.py` | `tests/test_schedule_api.py::test_concurrent_confirm_has_single_winner_and_no_mixed_occupancy` |
+| TRAP-32 | 两个确认请求并发提交，后到的把先到的方案悄悄顶替 | 只校验 draft 自身状态，两个请求都看到自己是 draft，双双成功 | draft 落库时记 `base_confirmed_plan`，事务内复查最新确认方案，基线变了回滚并报 `S_PLAN_SUPERSEDED` | `app/store.py::confirm_plan` | `tests/test_schedule_api.py::test_concurrent_confirm_has_single_winner_and_no_mixed_occupancy` |
 
 ## 对账规则
 

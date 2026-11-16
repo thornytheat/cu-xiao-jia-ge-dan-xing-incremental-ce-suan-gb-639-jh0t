@@ -129,3 +129,36 @@ sha256 的摘要）、`input_digest`（三份输入 sha256 的摘要）、`rule_
   再按前置趋势差从小到大。实验期内有自有促销的候选直接判「排除」（`D_CONTROL_OVERLAP`）。
 - **目标效应**接受 `0.05` 与 `5%` 两种写法，取值必须落在 `(0, 1]`；α 在 `(0, 0.5)`，
   功效在 `[0.5, 1)`，预算天数 1-180 的整数，越界一律 422 并给原因码。
+
+## 11 批次对照排程
+
+排程回答「下月这批实验各用哪个对照、会不会撞车」，输入是每行
+`实验编号,商品,渠道,开始日,结束日` 的清单，窗口一律左闭右开。
+
+### 11.1 硬约束与择优
+
+| 规则 | 判定 | 不满足时 |
+|---|---|---|
+| 同渠道非自身 | 候选必须与实验商品同渠道且 SKU 不同 | 候选不进可行集（`S_CONTROL_TARGET` 兜底） |
+| 窗内无自有促销 | 候选在 `[start, end)` 内任一天有生效促销即淘汰 | `S_CONTROL_OVERLAP`，带重叠日期 |
+| 占用不撞车 | 与已确认占用或本批其它分配的窗口有一天重叠即淘汰 | `S_CONTROL_BUSY`，带撞车的实验编号 |
+| 趋势可比 | 前置半段有效天数各 ≥ 3 才能算趋势差 | 不足记 `D_CONTROL_SHORT`，不进可行集 |
+| 择优 | 硬约束全过后，全批趋势差总和最小 | 趋势差超 0.10 只排序不淘汰（`D_CONTROL_TREND`） |
+
+窗口首尾相接（`A.end == B.start`）不共享任何一天，允许同一对照按时间片复用；
+求解用 MRV + 分支定界回溯，给不出覆盖全部实验的完整匹配时，不返回半成品，
+只把卡死实验连同「每个候选被谁占着」的争用清单一起标出（`S_NO_FEASIBLE`）。
+
+### 11.2 方案与占用表
+
+| 表 | 粒度 | 关键字段 | 状态机 |
+|---|---|---|---|
+| `allocation_plans` | 一版排程方案 | `plan_id`、`batch_id`、`payload_json`（实验快照）、`result_json`（匹配结果）、`base_confirmed_plan` 基线 | `draft → confirmed → superseded` |
+| `control_occupancy` | 一条对照占用 | `plan_id`、`experiment_id`、`target_sku`、`control_sku`、`channel`、`start_date`、`end_date` | 只挂在 confirmed 方案上 |
+
+- 草稿（`/api/allocation/plan`）只写 `allocation_plans`，绝不写占用；
+- 确认（`/api/allocation/confirm`）在 `BEGIN IMMEDIATE` 单事务内复查
+  `base_confirmed_plan` 基线、顶替旧版、插占用，任一步失败整体回滚；
+- 并发确认时后到者基线过期，回滚并报 409 `S_PLAN_SUPERSEDED`；
+- 重试（`/api/allocation/retry`）按原实验快照重排新草稿，不触碰已确认占用，
+  因此不可能重复占位；不可行方案禁止确认（422 `S_NO_FEASIBLE`）。

@@ -35,6 +35,7 @@ STAGE_LABELS = {
     "elastic": "弹性",
     "lift": "增量",
     "design": "设计",
+    "schedule": "排程",
     "report": "报告",
 }
 STAGE_FLOW = "采信 → 归价 → 质量 → 弹性 → 增量 → 报告"

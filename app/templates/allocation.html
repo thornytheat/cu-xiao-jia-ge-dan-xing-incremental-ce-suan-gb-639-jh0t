@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}批次对照排程{% endblock %}
+{% block heading %}下月促销实验 · 批次对照排程{% endblock %}
+
+{% block main %}
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">提交实验批次</h2>
+    <p class="section-figure">每行一场：实验编号,商品,渠道,开始日,结束日（左闭右开）</p>
+  </div>
+  <form id="plan-form" class="form form-stack" data-endpoint="/api/allocation/plan"
+        data-method="POST" data-reload="0">
+    <input type="hidden" id="sample-payload" value="{{ sample_text }}">
+    <input type="hidden" id="stress-payload" value="{{ stress_text }}">
+    <label class="field field-grow">
+      <span>实验清单</span>
+      <textarea id="experiments-input" name="experiments" rows="7" spellcheck="false"
+        placeholder="EXP-1201,MY-0012,电商,2026-12-01,2026-12-14">{{ sample_text }}</textarea>
+    </label>
+    <div class="actions">
+      <button class="btn" type="submit">生成排程方案</button>
+      <button class="btn btn-ghost" type="button" data-fill="sample">填入下月示例</button>
+      <button class="btn btn-ghost" type="button" data-fill="stress">填入撞车压力样例</button>
+    </div>
+    <p class="form-note" hidden></p>
+  </form>
+  <ul class="rulelist">
+    <li><dt>硬约束 1</dt><dd>每场实验配同渠道的其它商品，对照不能是实验商品自己</dd></li>
+    <li><dt>硬约束 2</dt><dd>对照在实验窗内有自有促销的直接排除，不拿脏对照凑数</dd></li>
+    <li><dt>硬约束 3</dt><dd>同一对照同一时段只能服务一场实验，窗口重叠即冲突；首尾相接不算重叠</dd></li>
+    <li><dt>择优</dt><dd>硬约束全过后，取全批前置趋势差总和最小的匹配；无法满足的实验明确标红阻断</dd></li>
+    <li><dt>确认</dt><dd>整批原子占用：要么全部成功并顶替上一版，要么保留上一版；失败重试不重复占位</dd></li>
+  </ul>
+  {% if error %}
+  <p class="form-note is-error">{{ error.code }} · {{ error.message }}</p>
+  {% endif %}
+</section>
+
+<section class="section" id="plan-result" hidden>
+  <div class="section-head">
+    <h2 class="section-title">排程结果</h2>
+    <p class="section-figure" id="plan-meta"></p>
+  </div>
+  <div class="verdict">
+    <div class="verdict-cell">
+      <dt class="verdict-key">方案编号</dt>
+      <dd class="verdict-value" id="plan-id"><small>草稿</small></dd>
+    </div>
+    <div class="verdict-cell">
+      <dt class="verdict-key">实验场数</dt>
+      <dd class="verdict-value" id="plan-count"></dd>
+    </div>
+    <div class="verdict-cell">
+      <dt class="verdict-key">已配对</dt>
+      <dd class="verdict-value" id="plan-matched"></dd>
+    </div>
+    <div class="verdict-cell">
+      <dt class="verdict-key">无法满足</dt>
+      <dd class="verdict-value" id="plan-blocked"></dd>
+    </div>
+    <div class="verdict-cell">
+      <dt class="verdict-key">趋势差合计</dt>
+      <dd class="verdict-value" id="plan-gap"></dd>
+    </div>
+    <p class="verdict-note" id="plan-verdict"></p>
+  </div>
+
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>实验编号</th><th>实验商品</th><th>渠道</th><th>实验窗</th><th>分配对照</th>
+          <th class="num">前置趋势差</th><th>映射</th><th>状态</th><th>阻断原因 / 说明</th></tr>
+      </thead>
+      <tbody id="assignment-body"></tbody>
+    </table>
+  </div>
+
+  <div class="actions">
+    <button class="btn" type="button" id="confirm-btn" data-endpoint="/api/allocation/confirm">
+      确认整批占用
+    </button>
+    <button class="btn btn-ghost" type="button" id="retry-btn"
+            data-endpoint="/api/allocation/retry">按原分配重试</button>
+    <p class="form-note" id="confirm-note" hidden></p>
+  </div>
+</section>
+
+<section class="section" id="candidate-section" hidden>
+  <div class="section-head">
+    <h2 class="section-title">候选对照与淘汰原因</h2>
+    <p class="section-figure">每场实验的全部同渠道候选，硬约束淘汰均带原因码</p>
+  </div>
+  <div id="candidate-groups"></div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2 class="section-title">当前已确认占用</h2>
+    <p class="section-figure">
+      {% if view and view.occupancy %}{{ view.occupancy | length }} 条占用
+      {% else %}读取中{% endif %}
+    </p>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>实验编号</th><th>实验商品</th><th>对照商品</th><th>渠道</th>
+          <th>占用窗口</th><th>来源方案</th></tr>
+      </thead>
+      <tbody id="occupancy-body">
+        {% if view and view.occupancy %}
+        {% for row in view.occupancy %}
+        <tr>
+          <td>{{ row.experiment_id }}</td>
+          <td>{{ row.target_sku }}</td>
+          <td>{{ row.control_sku }}</td>
+          <td>{{ row.channel }}</td>
+          <td>{{ row.start_date }} → {{ row.end_date }}</td>
+          <td>{{ row.plan_id }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  <p class="empty" id="occupancy-empty"
+     {% if view and view.occupancy %}hidden{% endif %}>还没有确认过任何排程方案。</p>
+</section>
+
+<section class="section" {% if not view or not view.plans %}hidden{% endif %} id="plan-history-section">
+  <div class="section-head">
+    <h2 class="section-title">方案历史</h2>
+    <p class="section-figure">确认失败不影响上一版；被顶替的方案标记为 superseded</p>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>方案</th><th>状态</th><th>生成时间</th><th>确认时间</th><th>顶替自</th></tr></thead>
+      <tbody id="plan-history-body">
+        {% if view and view.plans %}
+        {% for row in view.plans %}
+        <tr>
+          <td>{{ row.plan_id }}</td>
+          <td><span class="tag tag-{{ 'ok' if row.status == 'confirmed' else ('error' if row.status == 'superseded' else 'quiet') }}">{{ row.status }}</span></td>
+          <td>{{ row.created_at | shortdt }}</td>
+          <td>{{ row.confirmed_at | shortdt if row.confirmed_at else "—" }}</td>
+          <td>{{ row.superseded_by or "—" }}</td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section" id="schedule-quarantine" hidden>
+  <div class="section-head">
+    <h2 class="section-title">排程校验</h2>
+    <p class="section-figure" id="quarantine-count"></p>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>原因码</th><th>级别</th><th>结论</th><th>说明</th><th>复核动作</th></tr></thead>
+      <tbody id="quarantine-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<script src="/static/allocation.js" defer></script>
+{% endblock %}

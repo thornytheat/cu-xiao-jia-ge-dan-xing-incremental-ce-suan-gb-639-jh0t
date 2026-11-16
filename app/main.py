@@ -16,11 +16,12 @@ from .modules.m4_elastic import handler as m4_handler
 from .modules.m5_lift import handler as m5_handler
 from .modules.m6_report import handler as m6_handler
 from .modules.m7_design import handler as m7_handler
+from .modules.m8_schedule import handler as m8_handler
 
 MODULES = (m1_handler, m2_handler, m3_handler, m4_handler, m5_handler, m6_handler,
-           m7_handler)
+           m7_handler, m8_handler)
 PAGE_PATHS = ("/", "/contract", "/quarantine", "/elasticity", "/lift", "/report",
-              "/design")
+              "/design", "/allocation")
 
 
 def create_app(settings: config.Settings | None = None) -> FastAPI:

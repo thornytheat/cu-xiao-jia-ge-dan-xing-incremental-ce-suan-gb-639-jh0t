@@ -13,6 +13,7 @@
 - 增量测算：对照组基线 + 95% 区间，渠道分摊用最大余额法保证守恒
 - 五账核对（行/天数/金额/促销/分摊）与运行清单导出
 - 实验设计：按目标效应与功效算最小实验期、预算下可识别效应、对照建议与预期区间
+- 批次对照排程：一批实验一次排好独立对照，同对照同时段禁并发，整批原子占用、失败可重试不重复占位
 
 ## 模块
 
@@ -25,6 +26,7 @@
 | M5 增量与批次 | 增量、区间、渠道分摊、批次历史 | `POST /api/lift` · `GET /api/batches` | `/lift` |
 | M6 报告导出 | 五账核对与 CSV/清单导出 | `GET /api/report` · `GET /api/export?kind=` | `/report` |
 | M7 实验设计 | 最小实验期、可识别效应、对照建议、缺日敏感性 | `POST /api/design` · `GET /api/design` | `/design` |
+| M8 批次排程 | 批次对照匹配、占用确认、顶替与重试 | `POST /api/allocation/plan` · `POST /api/allocation/confirm` · `POST /api/allocation/retry` | `/allocation` |
 
 ## 核心规则
 
@@ -35,6 +37,9 @@
 3. **促销区间**：左闭右开 `[开始日, 结束日)`；同日多版时版本号大者生效，与书写顺序无关。
 4. **实验设计**：`最小实验期 = (A² + sqrt(A⁴ + 4·A²·14))/2`，`A = (z(1−α/2) + z(功效))·cv/目标效应`；
    方差用 HC1 稳健标准误放大，缺日按三种补法各算一遍，对照按实验期重叠与前置趋势差打分。
+5. **批次排程**：对照窗口左闭右开按天判撞，重叠一天即冲突、首尾相接可复用；
+   MRV 回溯取全批前置趋势差总和最小的完整匹配，给不出完整匹配就阻断标红，不返半成品；
+   确认走 `BEGIN IMMEDIATE` 单事务 + 乐观基线复查，全有或全无，失败重试只产草稿不重复占位。
 
 详细定义见 `docs/DATA-DICTIONARY.md`，陷阱与测试映射见 `docs/DEPTH.md`。
 
@@ -63,6 +68,7 @@ uvicorn app.main:create_app --factory --port 18208
 4. `/lift` 看增量、区间与渠道分摊合计。
 5. `/report` 核对五账，导出增量 / 弹性 / 五账 / 运行清单。
 6. `/design` 填目标效应与预算天数，看最小实验期、预算下可识别效应、对照建议与三种缺日补法。
+7. `/allocation` 粘贴下月实验清单生成排程方案，看独立对照、淘汰原因与阻断实验，整批确认占用或按原分配重试。
 
 ## 页面
 
@@ -75,14 +81,15 @@ uvicorn app.main:create_app --factory --port 18208
 | `/lift` | 增量结论、重算、增量明细、渠道分摊、批次 |
 | `/report` | 结论、五账核对、指标、原因码、运行清单（可打印） |
 | `/design` | 设计输入、结论、实验窗与波动、缺日插补、控制组候选、设计校验 |
+| `/allocation` | 实验批次提交、排程结果、候选淘汰原因、已确认占用、方案历史、排程校验 |
 
 ## 目录
 
 ```text
 app/                 main.py config.py errors.py reasons.py manifest.py store.py web.py
-app/modules/         m1_ingest m2_price m3_quality m4_elastic m5_lift m6_report m7_design
-app/templates/       base.html + 7 页
-app/static/          theme.css layout.css components.css print.css app.js charts.js tables.js
+app/modules/         m1_ingest m2_price m3_quality m4_elastic m5_lift m6_report m7_design m8_schedule
+app/templates/       base.html + 8 页
+app/static/          theme.css layout.css components.css print.css app.js charts.js tables.js allocation.js
 docs/                DEPTH.md DATA-DICTIONARY.md
 sample_data/         7 份样例（含 3 类以上脏数据）+ 说明
 tests/               conftest.py 7 个模块测试 test_e2e.py fixtures/
@@ -95,3 +102,4 @@ tests/               conftest.py 7 个模块测试 test_e2e.py fixtures/
 - 弹性模型不含固定效应与季节虚拟变量。
 - 中文数字型促销条件（「满三百减五十」）不解析。
 - 实验设计的功效按正态近似算，不做 t 分布小样本校正、序贯检验与多商品预算分配。
+- 排程占用按批次隔离，不跨批次共享对照资源；同一实验商品重复提交不会被自动去重，只按实验编号判重。
